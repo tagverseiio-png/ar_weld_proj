@@ -29,7 +29,8 @@ export function json(statusCode: number, body: unknown) {
   };
 }
 
-export const ok = (body: unknown) => json(200, body);export const created = (body: unknown) => json(201, body);
+export const ok = (body: unknown) => json(200, body);
+export const created = (body: unknown) => json(201, body);
 
 /**
  * Answer CORS preflights from the explicit unauthenticated OPTIONS routes.

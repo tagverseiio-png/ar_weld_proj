@@ -19,11 +19,34 @@ fi
 OVERRIDES=$(python3 -c "import json;print(' '.join(f\"{k}={v}\" for k,v in json.load(open('$PARAMS')).items() if v not in ('', None)))")
 
 echo "==> bundle backend (TS -> JS, Lambda runs plain Node)"
+# canvas -> @napi-rs/canvas: NAPI prebuilt (linux-x64-gnu in Lambda, no native
+# compile). @napi-rs/canvas stays external; its node_modules ships in the zip
+# via backend/package.json (SAM installs it into the artifact).
 ./node_modules/.bin/esbuild backend/handlers/*.ts --bundle --platform=node \
-  --format=cjs --target=node24 --outdir=backend/dist --log-level=warning
+  --format=cjs --target=node24 --outdir=backend/dist --log-level=warning \
+  --external:@napi-rs/canvas --alias:canvas=@napi-rs/canvas
 
 echo "==> sam build"
 sam build --template-file infra/template.yaml
+
+echo "==> inject linux-x64-glibc canvas binding into marker-builder artifact"
+# backend/package.json keeps the binding optional so `npm install` works on any
+# dev OS; SAM's macOS-side install therefore skips it — fetch the tarball
+# directly and unpack it into the built artifact before `sam deploy` zips it.
+CANVAS_VER=$(python3 -c "import json;print(json.load(open('backend/package.json'))['optionalDependencies']['@napi-rs/canvas'])")
+MB_ARTIFACT=".aws-sam/build/MarkerBuilderFn"
+if [ -d "$MB_ARTIFACT/node_modules/@napi-rs" ]; then
+  mkdir -p /tmp/canvas-linux-pkg
+  curl -sL "https://registry.npmjs.org/@napi-rs/canvas-linux-x64-gnu/-/canvas-linux-x64-gnu-${CANVAS_VER}.tgz" \
+    | tar xz -C /tmp/canvas-linux-pkg
+  rm -rf "$MB_ARTIFACT/node_modules/@napi-rs/canvas-linux-x64-gnu"
+  mv /tmp/canvas-linux-pkg/package "$MB_ARTIFACT/node_modules/@napi-rs/canvas-linux-x64-gnu"
+  node -e "require('$MB_ARTIFACT/node_modules/@napi-rs/canvas-linux-x64-gnu')" 2>/dev/null \
+    && echo "(binding present; load-check skipped on macOS — expected)" || true
+  ls "$MB_ARTIFACT/node_modules/@napi-rs"
+else
+  echo "WARN: $MB_ARTIFACT/node_modules/@napi-rs missing — native binding NOT shipped" >&2
+fi
 echo "==> sam deploy ${STACK} (${REGION})"
 # shellcheck disable=SC2086
 sam deploy \

@@ -1,0 +1,11 @@
+{
+  "name": "ar-wedding-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lambda handlers for AR Wedding Moments. dist/ is bundled by infra/deploy.sh (esbuild); only the native canvas binding ships as real node_modules. Bindings are optional so `npm install` works on any dev OS; deploy.sh injects the linux-x64-glibc binding into the SAM artifact post-build.",
+  "type": "commonjs",
+  "optionalDependencies": {
+    "@napi-rs/canvas": "1.0.8",
+    "@napi-rs/canvas-linux-x64-gnu": "1.0.8"
+  }
+}

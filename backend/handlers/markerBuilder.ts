@@ -5,11 +5,9 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { execFile } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { ddb, pkAlbum, skBuild, skMeta, tableName } from "../shared/ddb";
 import {
   publishedManifestKey,
@@ -23,8 +21,11 @@ import {
   orderPagesForBuild,
   shouldFailBuild,
 } from "../shared/manifest";
-
-const execFileAsync = promisify(execFile);
+// In-process MindAR compile (no CLI/npx — Lambda has no writable npm home).
+// Compiler src vendored at backend/vendor/mind-ar (MIT, mind-ar@1.2.5).
+// `canvas` is aliased to @napi-rs/canvas at bundle time by infra/deploy.sh.
+import { OfflineCompiler } from "../vendor/mind-ar/src/image-target/offline-compiler.js";
+import { loadImage } from "@napi-rs/canvas";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -262,10 +263,9 @@ async function processBuild(msg: BuildMessage) {
 }
 
 /**
- * Compile staged photos into a combined .mind file.
- * Production Lambda layers/container include the MindAR compiler; when it is
- * absent (local/dev without the layer) we fail LOUDLY rather than shipping
- * a fake marker that would silently break guest scanning.
+ * Compile staged photos into a combined .mind file — IN PROCESS.
+ * mind-ar's OfflineCompiler (tfjs CPU kernels) + @napi-rs/canvas for image
+ * decode; no CLI/npx (Lambda has no writable npm home / binaries).
  */
 async function compileMindTarget(
   s3: S3Client,
@@ -274,7 +274,7 @@ async function compileMindTarget(
 ): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "mind-"));
   try {
-    const local: string[] = [];
+    const images = [];
     for (let i = 0; i < photoKeys.length; i++) {
       const key = photoKeys[i] as string;
       const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
@@ -283,28 +283,19 @@ async function compileMindTarget(
       const ext = key.toLowerCase().endsWith(".webp") ? "webp" : "jpg";
       const file = join(dir, `target-${i}.${ext}`);
       await writeFile(file, Buffer.from(bytes));
-      local.push(file);
+      const img = await loadImage(file);
+      images.push(img);
     }
-    const out = join(dir, "targets.mind");
-    // Supported compiler CLIs (first match wins): layer-provided `mindar-compile`,
-    // or the `mind-ar` npm compiler. Both produce a combined .mind file.
-    const attempts: Array<{ cmd: string; args: string[] }> = [
-      { cmd: "mindar-compile", args: [...local, "-o", out] },
-      { cmd: "npx", args: ["--yes", "mind-ar@1.2.5", "compile", ...local, "-o", out] },
-    ];
-    let lastError: unknown = null;
-    for (const a of attempts) {
-      try {
-        await execFileAsync(a.cmd, a.args, { timeout: 240_000, maxBuffer: 32 * 1024 * 1024 });
-        return await readFile(out);
-      } catch (e) {
-        lastError = e;
-      }
+    const compiler = new OfflineCompiler();
+    await compiler.compileImageTargets(images, () => undefined);
+    const exported = compiler.exportData();
+    if (!exported || (exported as Uint8Array).length === 0) {
+      throw new Error("MindAR compiler produced an empty .mind file.");
     }
-    throw new Error(
-      `MindAR compiler unavailable in this environment (${lastError instanceof Error ? lastError.message.slice(0, 300) : "unknown"}). ` +
-        "Deploy the marker-builder with the compiler layer/container before publishing.",
-    );
+    return Buffer.from(exported as Uint8Array);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`MindAR compile failed: ${msg.slice(0, 400)}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

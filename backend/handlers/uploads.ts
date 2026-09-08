@@ -13,6 +13,7 @@ import { stagingPhotoKey, stagingVideoKey } from "../shared/keys";
 import {
   ApiEvent,
   badRequest,
+  corsPreflight,
   created,
   notFound,
   ok,
@@ -44,9 +45,11 @@ function nowIso(): string {
  *  POST   /albums/{id}/pages/reorder
  */
 export async function handler(event: ApiEvent) {
+  const httpMethod: string = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
+  if (httpMethod === "OPTIONS") return corsPreflight(event);
   const admin = requireAdmin(event);
   if (!admin) return unauthorized();
-  const method: string = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
+  const method: string = httpMethod;
   const path: string = event.requestContext?.http?.path ?? event.path ?? "";
   const albumId = event.pathParameters?.["id"] ?? "";
   const pageId = event.pathParameters?.["pageId"] ?? "";

@@ -11,6 +11,7 @@ import {
   ApiEvent,
   badRequest,
   conflict,
+  corsPreflight,
   created,
   notFound,
   ok,
@@ -40,6 +41,8 @@ function expiryInFuture(value: unknown): string | undefined {
 
 /** Route: ANY /albums and /albums/{id} -> single Lambda via HTTP API routeKeys. */
 export async function handler(event: ApiEvent) {
+  const httpMethod = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
+  if (httpMethod === "OPTIONS") return corsPreflight(event);
   const admin = requireAdmin(event);
   if (!admin) return unauthorized();
   const routeKey: string = event.requestContext?.http?.method

@@ -29,8 +29,34 @@ export function json(statusCode: number, body: unknown) {
   };
 }
 
-export const ok = (body: unknown) => json(200, body);
-export const created = (body: unknown) => json(201, body);
+export const ok = (body: unknown) => json(200, body);export const created = (body: unknown) => json(201, body);
+
+/**
+ * Answer CORS preflights from the explicit unauthenticated OPTIONS routes.
+ * The default JWT authorizer would otherwise 401 them (no token on
+ * preflights). Echoes the request origin only when allowlisted via the
+ * CORS_ORIGINS env var; actual responses get ACAO from API-level CORS.
+ */
+export function corsPreflight(event: ApiEvent) {
+  const allow = (process.env["CORS_ORIGINS"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const headers = event.headers ?? {};
+  const origin = headers["origin"] ?? headers["Origin"] ?? "";
+  const allowed = (origin && allow.includes(origin) ? origin : allow[0]) ?? "";
+  return {
+    statusCode: 204,
+    headers: {
+      "access-control-allow-origin": allowed,
+      "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
+      "access-control-allow-headers": "authorization,content-type",
+      "access-control-max-age": "300",
+      vary: "Origin",
+    },
+    body: "",
+  };
+}
 export const badRequest = (code: string, message: string) =>
   json(400, { error: "AR_ALBUM_ERROR", code, message });
 export const unauthorized = () =>

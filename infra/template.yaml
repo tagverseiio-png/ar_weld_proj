@@ -246,14 +246,10 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: $default
-      CorsConfiguration:
-        AllowOrigins: !If
-          - IsSameOrigin
-          - [!Ref VercelOrigin]
-          - [!Ref VercelOrigin, !Ref CanonicalOrigin]
-        AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
-        AllowHeaders: [authorization, content-type]
-        MaxAge: 300
+      # NOTE: no CorsConfiguration here on purpose. Intrinsics inside API
+      # CORS origins are silently dropped (verified: Fn::If -> null config
+      # with a successful deploy), and S3 CORS has the same quirk with Refs.
+      # deploy.sh applies literal API CORS data-plane after deploy.
       DefaultRouteSettings:
         ThrottlingBurstLimit: 50
         ThrottlingRateLimit: 100
@@ -304,6 +300,7 @@ Resources:
       Environment:
         Variables:
           EXPIRY_QUEUE_URL: !Ref ExpiryQueue
+          CORS_ORIGINS: !Sub "${VercelOrigin},${CanonicalOrigin}"
           ALLOW_MOCK_AUTH: "false"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
@@ -314,6 +311,8 @@ Resources:
         Get: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: GET, ApiId: !Ref HttpApi } }
         Update: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: PATCH, ApiId: !Ref HttpApi } }
         Delete: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: DELETE, ApiId: !Ref HttpApi } }
+        OptAlbums: { Type: HttpApi, Properties: { Path: /albums, Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptAlbumId: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
 
   UploadsFn:
     Type: AWS::Serverless::Function
@@ -322,7 +321,9 @@ Resources:
       CodeUri: ../backend
       Handler: dist/uploads.handler
       Environment:
-        Variables: { ALLOW_MOCK_AUTH: "false" }
+        Variables:
+          CORS_ORIGINS: !Sub "${VercelOrigin},${CanonicalOrigin}"
+          ALLOW_MOCK_AUTH: "false"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
         - S3CrudPolicy: { BucketName: !Ref MediaBucket }
@@ -331,6 +332,10 @@ Resources:
         Complete: { Type: HttpApi, Properties: { Path: "/albums/{id}/upload-sessions/{pageId}/complete", Method: POST, ApiId: !Ref HttpApi } }
         DeletePage: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/{pageId}", Method: DELETE, ApiId: !Ref HttpApi } }
         Reorder: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/reorder", Method: POST, ApiId: !Ref HttpApi } }
+        OptSessions: { Type: HttpApi, Properties: { Path: "/albums/{id}/upload-sessions", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptComplete: { Type: HttpApi, Properties: { Path: "/albums/{id}/upload-sessions/{pageId}/complete", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptPage: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/{pageId}", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptReorder: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/reorder", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
 
   BuildsFn:
     Type: AWS::Serverless::Function
@@ -341,6 +346,7 @@ Resources:
       Environment:
         Variables:
           BUILD_QUEUE_URL: !Ref BuildQueue
+          CORS_ORIGINS: !Sub "${VercelOrigin},${CanonicalOrigin}"
           EXPIRY_QUEUE_URL: !Ref ExpiryQueue
           ALLOW_MOCK_AUTH: "false"
       Policies:
@@ -352,6 +358,10 @@ Resources:
         BuildStatus: { Type: HttpApi, Properties: { Path: "/albums/{id}/builds/{buildId}", Method: GET, ApiId: !Ref HttpApi } }
         Rotate: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/rotate", Method: POST, ApiId: !Ref HttpApi } }
         Revoke: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/revoke", Method: POST, ApiId: !Ref HttpApi } }
+        OptPublish: { Type: HttpApi, Properties: { Path: "/albums/{id}/publish", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptBuild: { Type: HttpApi, Properties: { Path: "/albums/{id}/builds/{buildId}", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptRotate: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/rotate", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
+        OptRevoke: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/revoke", Method: OPTIONS, ApiId: !Ref HttpApi, Auth: { Authorizer: NONE } } }
 
   MarkerBuilderFn:
     Type: AWS::Serverless::Function
@@ -528,6 +538,8 @@ Conditions:
   IsNotCfEnabled: !Equals [!Ref EnableCloudFront, "false"]
 
 Outputs:
+  ApiId:
+    Value: !Ref HttpApi
   ApiBaseUrl:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   MediaBucketName:

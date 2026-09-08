@@ -5,6 +5,7 @@ import { ddb, gsi1pkForPublic, pkAlbum, skBuild, skMeta, tableName } from "../sh
 import {
   ApiEvent,
   badRequest,
+  corsPreflight,
   created,
   notFound,
   ok,
@@ -26,9 +27,11 @@ function nowIso(): string {
  *  POST /albums/{id}/qr/revoke
  */
 export async function handler(event: ApiEvent) {
+  const httpMethod: string = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
+  if (httpMethod === "OPTIONS") return corsPreflight(event);
   const admin = requireAdmin(event);
   if (!admin) return unauthorized();
-  const method: string = event.requestContext?.http?.method ?? event.httpMethod ?? "GET";
+  const method: string = httpMethod;
   const path: string = event.requestContext?.http?.path ?? event.path ?? "";
   const albumId = event.pathParameters?.["id"] ?? "";
   const buildId = event.pathParameters?.["buildId"] ?? "";

@@ -42,3 +42,11 @@ BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REG
 ORIGINS=$(python3 -c "import json; p=json.load(open('$PARAMS')); print(' '.join([o for o in dict.fromkeys([p.get('VercelOrigin',''), p.get('CanonicalOrigin','')]) if o]))")
 # shellcheck disable=SC2086
 bash infra/configure-cors.sh "$BUCKET" $ORIGINS
+
+echo "==> API CORS (literal origins via update-api; see template note)"
+APIID=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`ApiId`].OutputValue' --output text)
+ORIGINS_CSV=$(python3 -c "import json; p=json.load(open('$PARAMS')); print(','.join([o for o in dict.fromkeys([p.get('VercelOrigin',''), p.get('CanonicalOrigin','')]) if o]))")
+aws apigatewayv2 update-api --api-id "$APIID" --region "$REGION" \
+  --cors-configuration "AllowOrigins=$ORIGINS_CSV,AllowMethods=GET,POST,PATCH,DELETE,OPTIONS,AllowHeaders=authorization,content-type,MaxAge=300" \
+  --query 'CorsConfiguration.AllowOrigins' --output text

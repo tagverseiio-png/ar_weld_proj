@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDown, ArrowUp, Film, Plus, QrCode, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Film, Pencil, Plus, QrCode, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { StatusBadge } from "@/components/StatusBadge";
+import { AlbumDialog } from "@/components/AlbumDialog";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import {
   createAlbumPage,
@@ -59,6 +72,7 @@ function AlbumDetailPage() {
   const [videoProgress, setVideoProgress] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [expiry, setExpiry] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
@@ -301,7 +315,6 @@ function AlbumDetailPage() {
       }
     }
   }
-
   async function saveExpiry() {
     if (!isProd()) return;
     try {
@@ -315,6 +328,17 @@ function AlbumDetailPage() {
       await load();
     } catch (e) {
       toast.error((e as { message?: string })?.message ?? "Could not save expiry.");
+    }
+  }
+
+  async function deleteWholeAlbum() {
+    if (!isProd()) return;
+    try {
+      await prodApi.deleteAlbum(id);
+      toast.success("Album deleted.");
+      navigate({ to: "/admin" });
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? "Could not delete album.");
     }
   }
 
@@ -338,8 +362,54 @@ function AlbumDetailPage() {
     <div className="pb-28">
       <div className="mx-auto max-w-6xl px-5 py-8">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="text-3xl">{coupleName}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-3xl">{coupleName}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+            </div>
+            {isProd() && prodAlbum && (
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditOpen(true)}
+                  aria-label={`Edit ${coupleName}`}
+                >
+                  <Pencil className="size-3.5" /> Edit details
+                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      aria-label={`Delete ${coupleName}`}
+                    >
+                      <Trash2 className="size-3.5" /> Delete
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete &ldquo;{coupleName}&rdquo;?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This permanently removes the album, its photo/video pages, the published
+                        marker and the guest QR link. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => void deleteWholeAlbum()}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Delete album
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
+          </div>
           {isProd() && (
             <p className="mt-1 text-xs text-muted-foreground">
               Status: {albumStatus} · {pages.filter((p) => p.status === "ready").length}/
@@ -348,6 +418,21 @@ function AlbumDetailPage() {
             </p>
           )}
         </motion.div>
+
+        {isProd() && prodAlbum && (
+          <AlbumDialog
+            open={editOpen}
+            onOpenChange={setEditOpen}
+            albumId={id}
+            initial={{
+              coupleName: prodAlbum.coupleName,
+              eventDate: prodAlbum.eventDate ?? "",
+              venue: prodAlbum.venue ?? "",
+              expiryDate:
+                (prodAlbum as unknown as { expiryDate?: string }).expiryDate?.slice(0, 10) ?? "",
+            }}
+          />
+        )}
 
         {buildError && (
           <p

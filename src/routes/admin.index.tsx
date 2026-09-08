@@ -1,10 +1,10 @@
+import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { HeartHandshake, Plus } from "lucide-react";
-import { toast } from "sonner";
 import { AlbumCard } from "@/components/AlbumCard";
-import { useAlbums, useCreateAlbum } from "@/hooks/useAlbums";
-import { prodApi } from "@/lib/api";
+import { AlbumDialog } from "@/components/AlbumDialog";
+import { useAlbums } from "@/hooks/useAlbums";
 
 export const Route = createFileRoute("/admin/")({
   head: () => ({
@@ -22,23 +22,8 @@ export const Route = createFileRoute("/admin/")({
 
 function AlbumsPage() {
   const { data: albums, isLoading, isError } = useAlbums();
-  const create = useCreateAlbum();
   const navigate = useNavigate();
-
-  async function newAlbum() {
-    if (!prodApi.configured) {
-      toast.message("Prototype mode — albums are mocked locally.");
-      return;
-    }
-    const coupleName = window.prompt("Couple name (e.g. Meera & Arjun)")?.trim();
-    if (!coupleName) return;
-    try {
-      const created = await create.mutateAsync({ coupleName });
-      navigate({ to: "/admin/albums/$id", params: { id: created.albumId } });
-    } catch (e) {
-      toast.error((e as { message?: string })?.message ?? "Could not create album.");
-    }
-  }
+  const [createOpen, setCreateOpen] = useState(false);
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-10">
@@ -55,13 +40,18 @@ function AlbumsPage() {
         </div>
         <motion.button
           whileTap={{ scale: 0.96 }}
-          onClick={() => void newAlbum()}
-          disabled={create.isPending}
+          onClick={() => setCreateOpen(true)}
           className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           <Plus className="size-4" /> New album
         </motion.button>
       </motion.div>
+
+      <AlbumDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={(albumId) => navigate({ to: "/admin/albums/$id", params: { id: albumId } })}
+      />
 
       {isLoading ? (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -84,7 +74,7 @@ function AlbumsPage() {
           Couldn&apos;t load albums. Check your connection and sign-in, then retry.
         </p>
       ) : !albums || albums.length === 0 ? (
-        <EmptyState />
+        <EmptyState onCreate={() => setCreateOpen(true)} />
       ) : (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {albums.map((a, i) => (
@@ -105,7 +95,7 @@ function AlbumsPage() {
   );
 }
 
-function EmptyState() {
+function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.97 }}
@@ -119,7 +109,10 @@ function EmptyState() {
       <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
         Start with a couple, add their photos and the videos behind them.
       </p>
-      <button className="mt-6 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground">
+      <button
+        onClick={onCreate}
+        className="mt-6 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground"
+      >
         Create your first album
       </button>
     </motion.div>

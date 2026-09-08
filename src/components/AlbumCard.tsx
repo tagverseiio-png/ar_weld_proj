@@ -1,13 +1,29 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "@tanstack/react-router";
-import { HeartHandshake, Link2, MapPin } from "lucide-react";
+import { HeartHandshake, Link2, MapPin, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Album as MockAlbum } from "@/lib/mock-api";
 import { guestUrlForAlbum as mockGuestUrl } from "@/lib/mock-api";
 import { canonicalOrigin } from "@/lib/config";
 import { guestPathForPublicId } from "@/contracts";
 import type { AlbumRecord } from "@/contracts";
+import { prodApi } from "@/lib/api";
+import { useDeleteAlbum } from "@/hooks/useAlbums";
+import { AlbumDialog } from "./AlbumDialog";
 import { StatusBadge } from "./StatusBadge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 
 type CardAlbum = MockAlbum | (AlbumRecord & { coverUrl?: string });
 
@@ -24,6 +40,9 @@ export function AlbumCard({ album, index = 0 }: { album: CardAlbum; index?: numb
   const id = getId(album);
   const cover = (album as MockAlbum).coverUrl;
   const publicId = (album as Partial<AlbumRecord>).publicId;
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const del = useDeleteAlbum();
 
   async function copyLink() {
     try {
@@ -34,6 +53,22 @@ export function AlbumCard({ album, index = 0 }: { album: CardAlbum; index?: numb
       toast.success("Guest QR link copied");
     } catch {
       toast.error("Copy failed — open the album to get its link.");
+    }
+  }
+
+  async function confirmDelete() {
+    if (!prodApi.configured) {
+      toast.message("Prototype mode — albums are mocked locally.");
+      return;
+    }
+    setDeleting(true);
+    try {
+      await del.mutateAsync(id);
+      toast.success(`"${album.coupleName}" deleted.`);
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? "Could not delete album.");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -87,7 +122,61 @@ export function AlbumCard({ album, index = 0 }: { album: CardAlbum; index?: numb
         >
           <Link2 className="size-4" /> Copy QR Link
         </motion.button>
+        {/* CRUD: edit + delete live beside the QR action. */}
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            onClick={() => setEditOpen(true)}
+            aria-label={`Edit ${album.coupleName}`}
+          >
+            <Pencil className="size-3.5" /> Edit
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1 text-destructive hover:text-destructive"
+                aria-label={`Delete ${album.coupleName}`}
+              >
+                <Trash2 className="size-3.5" /> Delete
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete &ldquo;{album.coupleName}&rdquo;?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This permanently removes the album, its photo/video pages, the published marker
+                  and the guest QR link. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => void confirmDelete()}
+                  disabled={deleting}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {deleting ? "Deleting…" : "Delete album"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
+
+      <AlbumDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        albumId={prodApi.configured ? id : undefined}
+        initial={{
+          coupleName: album.coupleName,
+          eventDate: (album as MockAlbum).eventDate ?? "",
+          venue: (album as MockAlbum).venue ?? "",
+        }}
+      />
     </motion.div>
   );
 }

@@ -55,9 +55,9 @@ export function useCreateAlbum() {
   return useMutation({
     mutationFn: (input: {
       coupleName: string;
-      eventDate?: string;
-      venue?: string;
-      expiryDate?: string;
+      eventDate?: string | undefined;
+      venue?: string | undefined;
+      expiryDate?: string | undefined;
     }) => prodApi.createAlbum(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.albums }),
   });
@@ -79,5 +79,21 @@ export function useDeleteAlbum() {
   return useMutation({
     mutationFn: (albumId: string) => prodApi.deleteAlbum(albumId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.albums }),
+  });
+}
+
+export function useUpdateAlbum(albumId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      coupleName?: string | undefined;
+      eventDate?: string | undefined;
+      venue?: string | undefined;
+      expiryDate?: string | null | undefined;
+    }) => prodApi.updateAlbum(albumId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.album(albumId) });
+      qc.invalidateQueries({ queryKey: qk.albums });
+    },
   });
 }

@@ -50,9 +50,9 @@ export const prodApi = {
   listAlbums: () => req<AlbumRecord[]>(`/albums`),
   createAlbum: (input: {
     coupleName: string;
-    eventDate?: string;
-    venue?: string;
-    expiryDate?: string;
+    eventDate?: string | undefined;
+    venue?: string | undefined;
+    expiryDate?: string | undefined;
   }) => req<AlbumRecord>(`/albums`, { method: "POST", body: JSON.stringify(input) }),
   getAlbum: (albumId: string) => req<AlbumRecord & { pages: PageRecord[] }>(`/albums/${albumId}`),
   updateAlbum: (albumId: string, input: Record<string, unknown>) =>

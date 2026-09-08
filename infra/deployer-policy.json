@@ -1,0 +1,102 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeployArWeddingStack",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:ListStacks",
+        "cloudformation:ListStackResources",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:ContinueUpdateRollback",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploads",
+        "s3:ListBucketMultipartUploads",
+        "s3:GetBucket*",
+        "s3:PutBucket*",
+        "s3:DeleteBucketPolicy",
+        "s3:GetBucketPolicy",
+        "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:PutLifecycleConfiguration",
+        "lambda:*",
+        "apigateway:*",
+        "dynamodb:*",
+        "cognito-idp:*",
+        "sqs:*",
+        "cloudfront:*",
+        "logs:*",
+        "sns:*",
+        "cloudwatch:*",
+        "scheduler:*",
+        "budgets:*",
+        "ce:GetCostAndUsage",
+        "ce:Describe*",
+        "sts:GetCallerIdentity",
+        "ses:Get*",
+        "ses:List*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": ["ap-south-1", "us-east-1"]
+        }
+      }
+    },
+    {
+      "Sid": "ManageProjectRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:PassRole",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/ar-wedding-*",
+        "arn:aws:iam::*:policy/ar-wedding-*"
+      ]
+    },
+    {
+      "Sid": "ReadOnlyDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListAllMyBuckets",
+        "iam:ListUsers",
+        "iam:ListRoles",
+        "iam:GetAccountSummary"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

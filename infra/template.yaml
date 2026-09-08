@@ -28,10 +28,21 @@ Parameters:
     Type: Number
     Default: 7
     AllowedValues: [7, 14]
+  EnableCloudFront:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set false when the account cannot create CloudFront distributions yet (unverified); published media is then served directly from S3 in-region
 
+# NOTE: no ReservedConcurrentExecutions anywhere: this account's Lambda
+# concurrent-execution limit is 10, and any reservation drops unreserved
+# below the enforced minimum. Correctness does not depend on it: the FIFO
+# build queue (one message group per album) plus DynamoDB conditional-write
+# revision guards make concurrent builds safe. Request a limit increase
+# before re-adding reservations; emergency pause = disable triggers/API.
 Globals:
   Function:
-    Runtime: nodejs20.x
+    Runtime: nodejs24.x
     MemorySize: 512
     Timeout: 30
     Tracing: PassThrough
@@ -50,21 +61,22 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
+      PublicAccessBlockConfiguration: !If
+        - IsCfEnabled
+        - BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        - BlockPublicAcls: true
+          BlockPublicPolicy: false
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: false
       OwnershipControls:
         Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
       VersioningConfiguration: { Status: Suspended }
-      CorsConfiguration:
-        CorsRules:
-          - AllowedHeaders: ["*"]
-            AllowedMethods: [GET, PUT, HEAD]
-            AllowedOrigins: [!Ref VercelOrigin, !Ref CanonicalOrigin]
-            ExposedHeaders: [ETag]
-            MaxAge: 300
+      # NOTE: no CorsConfiguration here on purpose. The EarlyValidation hook
+      # rejects intrinsic functions inside S3 AllowedOrigins, so per-env CORS
+      # is applied data-plane by infra/configure-cors.sh after deploy.
       LifecycleConfiguration:
         Rules:
           - Id: AbortIncompleteMultipart
@@ -78,8 +90,11 @@ Resources:
         - { Key: Project, Value: ar-wedding-moments }
         - { Key: Env, Value: !Ref Environment }
 
-  MediaBucketTlsOnly:
+  # One of the two bucket policies below is created (mutually exclusive).
+  # OAC-scoped when CloudFront is on; public published/* when serving direct.
+  MediaBucketPolicyOac:
     Type: AWS::S3::BucketPolicy
+    Condition: IsCfEnabled
     Properties:
       Bucket: !Ref MediaBucket
       PolicyDocument:
@@ -91,9 +106,38 @@ Resources:
             Action: "s3:*"
             Resource: [!Sub "${MediaBucket.Arn}", !Sub "${MediaBucket.Arn}/*"]
             Condition: { Bool: { "aws:SecureTransport": false } }
+          - Sid: AllowCloudFrontPublishedRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${MediaBucket.Arn}/published/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+
+  MediaBucketPolicyPublic:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsNotCfEnabled
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "${MediaBucket.Arn}", !Sub "${MediaBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": false } }
+          - Sid: AllowPublicPublishedRead
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${MediaBucket.Arn}/published/*"
 
   CloudFrontOAC:
     Type: AWS::CloudFront::OriginAccessControl
+    Condition: IsCfEnabled
     Properties:
       OriginAccessControlConfig:
         Name: !Sub "${StackPrefix}-${Environment}-oac"
@@ -103,6 +147,7 @@ Resources:
 
   MediaDistribution:
     Type: AWS::CloudFront::Distribution
+    Condition: IsCfEnabled
     Properties:
       DistributionConfig:
         Enabled: true
@@ -135,22 +180,6 @@ Resources:
         ViewerCertificate: { CloudFrontDefaultCertificate: true }
       Tags:
         - { Key: Project, Value: ar-wedding-moments }
-
-  MediaBucketOacPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref MediaBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowCloudFrontPublishedRead
-            Effect: Allow
-            Principal: { Service: cloudfront.amazonaws.com }
-            Action: s3:GetObject
-            Resource: !Sub "${MediaBucket.Arn}/published/*"
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
 
   # ------------------------------------------------------------------ data
   AlbumTable:
@@ -194,8 +223,14 @@ Resources:
       AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
-      CallbackURLs: [!Sub "${VercelOrigin}/admin/callback", !Sub "${CanonicalOrigin}/admin/callback"]
-      LogoutURLs: [!Ref VercelOrigin, !Ref CanonicalOrigin]
+      CallbackURLs: !If
+        - IsSameOrigin
+        - [!Sub "${VercelOrigin}/admin/callback"]
+        - [!Sub "${VercelOrigin}/admin/callback", !Sub "${CanonicalOrigin}/admin/callback"]
+      LogoutURLs: !If
+        - IsSameOrigin
+        - [!Ref VercelOrigin]
+        - [!Ref VercelOrigin, !Ref CanonicalOrigin]
       SupportedIdentityProviders: [COGNITO]
       AccessTokenValidity: 1
       IdTokenValidity: 1
@@ -206,7 +241,10 @@ Resources:
     Properties:
       StageName: $default
       CorsConfiguration:
-        AllowOrigins: [!Ref VercelOrigin, !Ref CanonicalOrigin]
+        AllowOrigins: !If
+          - IsSameOrigin
+          - [!Ref VercelOrigin]
+          - [!Ref VercelOrigin, !Ref CanonicalOrigin]
         AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
         AllowHeaders: [authorization, content-type]
         MaxAge: 300
@@ -220,6 +258,7 @@ Resources:
             JwtConfiguration:
               issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}"
               audience: [!Ref AdminUserPoolClient]
+            IdentitySource: $request.header.Authorization
 
   # ----------------------------------------------------------------- queues
   BuildDLQ:
@@ -256,7 +295,6 @@ Resources:
       FunctionName: !Sub "${StackPrefix}-${Environment}-albums"
       CodeUri: ../backend
       Handler: handlers/albums.handler
-      ReservedConcurrentExecutions: 10
       Environment:
         Variables: { ALLOW_MOCK_AUTH: "false" }
       Policies:
@@ -275,7 +313,6 @@ Resources:
       FunctionName: !Sub "${StackPrefix}-${Environment}-uploads"
       CodeUri: ../backend
       Handler: handlers/uploads.handler
-      ReservedConcurrentExecutions: 20
       Environment:
         Variables: { ALLOW_MOCK_AUTH: "false" }
       Policies:
@@ -293,7 +330,6 @@ Resources:
       FunctionName: !Sub "${StackPrefix}-${Environment}-builds"
       CodeUri: ../backend
       Handler: handlers/builds.handler
-      ReservedConcurrentExecutions: 5
       Environment:
         Variables:
           BUILD_QUEUE_URL: !Ref BuildQueue
@@ -317,10 +353,12 @@ Resources:
       Handler: handlers/markerBuilder.handler
       MemorySize: 2048
       Timeout: 300
-      ReservedConcurrentExecutions: 1 # serialize .mind compiles
       Environment:
         Variables:
-          CLOUDFRONT_ORIGIN: !Sub "https://${MediaDistribution.DomainName}"
+          CLOUDFRONT_ORIGIN: !If
+            - IsCfEnabled
+            - !Sub "https://${MediaDistribution.DomainName}"
+            - !Sub "https://${MediaBucket}.s3.${AWS::Region}.amazonaws.com"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
         - S3CrudPolicy: { BucketName: !Ref MediaBucket }
@@ -331,7 +369,6 @@ Resources:
           Properties:
             Queue: !GetAtt BuildQueue.Arn
             BatchSize: 1
-            MaximumBatchingWindowInSeconds: 5
             FunctionResponseTypes: [ReportBatchItemFailures]
 
   ExpiryDeleteFn:
@@ -343,14 +380,17 @@ Resources:
       Timeout: 300
       Environment:
         Variables:
-          CLOUDFRONT_DISTRIBUTION_ID: !Ref MediaDistribution
+          CLOUDFRONT_DISTRIBUTION_ID: !If [IsCfEnabled, !Ref MediaDistribution, ""]
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
         - S3CrudPolicy: { BucketName: !Ref MediaBucket }
         - Statement:
             - Effect: Allow
               Action: cloudfront:CreateInvalidation
-              Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+              Resource: !If
+                - IsCfEnabled
+                - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+                - "*"
         - SQSPollerPolicy: { QueueName: !GetAtt ExpiryQueue.QueueName }
       Events:
         ExpiryJobs:
@@ -462,7 +502,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${StackPrefix}-${Environment}-api-5xx"
-      MetricName: 5XXError
+      MetricName: 5xx
       Namespace: AWS/ApiGateway
       Dimensions: [{ Name: ApiId, Value: !Ref HttpApi }]
       Statistic: Sum
@@ -475,6 +515,9 @@ Resources:
 
 Conditions:
   HasNotifyEmail: !Not [!Equals [!Ref NotifyEmail, ""]]
+  IsSameOrigin: !Equals [!Ref VercelOrigin, !Ref CanonicalOrigin]
+  IsCfEnabled: !Equals [!Ref EnableCloudFront, "true"]
+  IsNotCfEnabled: !Equals [!Ref EnableCloudFront, "false"]
 
 Outputs:
   ApiBaseUrl:
@@ -484,9 +527,12 @@ Outputs:
   TableName:
     Value: !Ref AlbumTable
   CloudFrontDomain:
-    Value: !GetAtt MediaDistribution.DomainName
+    Value: !If [IsCfEnabled, !GetAtt MediaDistribution.DomainName, ""]
   CloudFrontOrigin:
-    Value: !Sub "https://${MediaDistribution.DomainName}"
+    Value: !If
+      - IsCfEnabled
+      - !Sub "https://${MediaDistribution.DomainName}"
+      - !Sub "https://${MediaBucket}.s3.${AWS::Region}.amazonaws.com"
   UserPoolId:
     Value: !Ref AdminUserPool
   UserPoolClientId:

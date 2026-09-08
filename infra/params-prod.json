@@ -1,0 +1,9 @@
+{
+  "Environment": "prod",
+  "StackPrefix": "ar-wedding",
+  "VercelOrigin": "https://ar-wedding-moments.vercel.app",
+  "CanonicalOrigin": "https://ar-wedding-moments.vercel.app",
+  "NotifyEmail": "studio@example.com",
+  "SesSender": "studio@example.com",
+  "LogRetentionDays": 14
+}

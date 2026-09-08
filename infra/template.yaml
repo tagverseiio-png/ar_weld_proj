@@ -1,0 +1,498 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: AR Wedding Moments single-studio MVP (ap-south-1). Private S3 + CloudFront OAC, 1 DDB table, Cognito admin, SQS marker build.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  StackPrefix:
+    Type: String
+    Default: ar-wedding
+  VercelOrigin:
+    Type: String
+    Description: "https://<project>.vercel.app (preview) or canonical prod URL"
+  CanonicalOrigin:
+    Type: String
+    Description: Canonical production Vercel URL used for printable QR codes
+  NotifyEmail:
+    Type: String
+    Default: ""
+    Description: Optional alarm + expiry-warning recipient (SES sender must be verified)
+  SesSender:
+    Type: String
+    Default: ""
+    Description: Verified SES identity, e.g. studio@example.com
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [7, 14]
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    MemorySize: 512
+    Timeout: 30
+    Tracing: PassThrough
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref AlbumTable
+        MEDIA_BUCKET: !Ref MediaBucket
+        AWS_REGION_NAME: !Ref AWS::Region
+
+Resources:
+  # ---------------------------------------------------------- media bucket
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain # prod safety; dev teardown empties then deletes via script
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      VersioningConfiguration: { Status: Suspended }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedOrigins: [!Ref VercelOrigin, !Ref CanonicalOrigin]
+            ExposedHeaders: [ETag]
+            MaxAge: 300
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+          - Id: CleanupQuarantine
+            Status: Enabled
+            Prefix: quarantine/
+            ExpirationInDays: 30
+      Tags:
+        - { Key: Project, Value: ar-wedding-moments }
+        - { Key: Env, Value: !Ref Environment }
+
+  MediaBucketTlsOnly:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "${MediaBucket.Arn}", !Sub "${MediaBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": false } }
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${StackPrefix}-${Environment}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  MediaDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${StackPrefix} ${Environment} published media"
+        HttpVersion: http2
+        PriceClass: PriceClass_100 # cheapest: US/EU/Asia edge subset incl. Mumbai
+        Origins:
+          - Id: MediaS3
+            DomainName: !GetAtt MediaBucket.RegionalDomainName
+            S3OriginConfig: { OriginAccessIdentity: "" }
+            OriginAccessControlId: !Ref CloudFrontOAC
+        DefaultCacheBehavior:
+          TargetOriginId: MediaS3
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # CORS-S3Origin
+        CacheBehaviors:
+          - PathPattern: published/*/manifest.latest.json
+            TargetOriginId: MediaS3
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # CachingDisabled (60s origin CC still applies)
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf
+        Restrictions: { GeoRestriction: { RestrictionType: none } }
+        ViewerCertificate: { CloudFrontDefaultCertificate: true }
+      Tags:
+        - { Key: Project, Value: ar-wedding-moments }
+
+  MediaBucketOacPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontPublishedRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${MediaBucket.Arn}/published/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+
+  # ------------------------------------------------------------------ data
+  AlbumTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: GSI1PK, AttributeType: S }
+        - { AttributeName: GSI1SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - { AttributeName: GSI1PK, KeyType: HASH }
+            - { AttributeName: GSI1SK, KeyType: RANGE }
+          Projection: { ProjectionType: KEYS_ONLY }
+      Tags:
+        - { Key: Project, Value: ar-wedding-moments }
+        - { Key: Env, Value: !Ref Environment }
+
+  # ------------------------------------------------------------------- auth
+  AdminUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${StackPrefix}-${Environment}-admins"
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true }
+      Policies:
+        PasswordPolicy: { MinimumLength: 12, RequireLowercase: true, RequireNumbers: true, RequireSymbols: false, RequireUppercase: true }
+
+  AdminUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref AdminUserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      CallbackURLs: [!Sub "${VercelOrigin}/admin/callback", !Sub "${CanonicalOrigin}/admin/callback"]
+      LogoutURLs: [!Ref VercelOrigin, !Ref CanonicalOrigin]
+      SupportedIdentityProviders: [COGNITO]
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH]
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins: [!Ref VercelOrigin, !Ref CanonicalOrigin]
+        AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
+        AllowHeaders: [authorization, content-type]
+        MaxAge: 300
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 100
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${AdminUserPool}"
+              audience: [!Ref AdminUserPoolClient]
+
+  # ----------------------------------------------------------------- queues
+  BuildDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${StackPrefix}-${Environment}-build-dlq.fifo"
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600 # 14d
+      Tags: [{ Key: Project, Value: ar-wedding-moments }]
+
+  BuildQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${StackPrefix}-${Environment}-build.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      VisibilityTimeout: 360 # > marker compile slice
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BuildDLQ.Arn
+        maxReceiveCount: 3
+      Tags: [{ Key: Project, Value: ar-wedding-moments }]
+
+  ExpiryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600
+      Tags: [{ Key: Project, Value: ar-wedding-moments }]
+
+  # --------------------------------------------------------------- lambdas
+  AlbumsFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-albums"
+      CodeUri: ../backend
+      Handler: handlers/albums.handler
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables: { ALLOW_MOCK_AUTH: "false" }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt ExpiryQueue.QueueName }
+      Events:
+        List: { Type: HttpApi, Properties: { Path: /albums, Method: GET, ApiId: !Ref HttpApi } }
+        Create: { Type: HttpApi, Properties: { Path: /albums, Method: POST, ApiId: !Ref HttpApi } }
+        Get: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: GET, ApiId: !Ref HttpApi } }
+        Update: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: PATCH, ApiId: !Ref HttpApi } }
+        Delete: { Type: HttpApi, Properties: { Path: "/albums/{id}", Method: DELETE, ApiId: !Ref HttpApi } }
+
+  UploadsFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-uploads"
+      CodeUri: ../backend
+      Handler: handlers/uploads.handler
+      ReservedConcurrentExecutions: 20
+      Environment:
+        Variables: { ALLOW_MOCK_AUTH: "false" }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
+        - S3CrudPolicy: { BucketName: !Ref MediaBucket }
+      Events:
+        CreateSession: { Type: HttpApi, Properties: { Path: "/albums/{id}/upload-sessions", Method: POST, ApiId: !Ref HttpApi } }
+        Complete: { Type: HttpApi, Properties: { Path: "/albums/{id}/upload-sessions/{pageId}/complete", Method: POST, ApiId: !Ref HttpApi } }
+        DeletePage: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/{pageId}", Method: DELETE, ApiId: !Ref HttpApi } }
+        Reorder: { Type: HttpApi, Properties: { Path: "/albums/{id}/pages/reorder", Method: POST, ApiId: !Ref HttpApi } }
+
+  BuildsFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-builds"
+      CodeUri: ../backend
+      Handler: handlers/builds.handler
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          BUILD_QUEUE_URL: !Ref BuildQueue
+          EXPIRY_QUEUE_URL: !Ref ExpiryQueue
+          ALLOW_MOCK_AUTH: "false"
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt BuildQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt ExpiryQueue.QueueName }
+      Events:
+        Publish: { Type: HttpApi, Properties: { Path: "/albums/{id}/publish", Method: POST, ApiId: !Ref HttpApi } }
+        BuildStatus: { Type: HttpApi, Properties: { Path: "/albums/{id}/builds/{buildId}", Method: GET, ApiId: !Ref HttpApi } }
+        Rotate: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/rotate", Method: POST, ApiId: !Ref HttpApi } }
+        Revoke: { Type: HttpApi, Properties: { Path: "/albums/{id}/qr/revoke", Method: POST, ApiId: !Ref HttpApi } }
+
+  MarkerBuilderFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-marker-builder"
+      CodeUri: ../backend
+      Handler: handlers/markerBuilder.handler
+      MemorySize: 2048
+      Timeout: 300
+      ReservedConcurrentExecutions: 1 # serialize .mind compiles
+      Environment:
+        Variables:
+          CLOUDFRONT_ORIGIN: !Sub "https://${MediaDistribution.DomainName}"
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
+        - S3CrudPolicy: { BucketName: !Ref MediaBucket }
+        - SQSPollerPolicy: { QueueName: !GetAtt BuildQueue.QueueName }
+      Events:
+        BuildJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BuildQueue.Arn
+            BatchSize: 1
+            MaximumBatchingWindowInSeconds: 5
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  ExpiryDeleteFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-expiry-delete"
+      CodeUri: ../backend
+      Handler: handlers/expiry.deleteHandler
+      Timeout: 300
+      Environment:
+        Variables:
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref MediaDistribution
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
+        - S3CrudPolicy: { BucketName: !Ref MediaBucket }
+        - Statement:
+            - Effect: Allow
+              Action: cloudfront:CreateInvalidation
+              Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+        - SQSPollerPolicy: { QueueName: !GetAtt ExpiryQueue.QueueName }
+      Events:
+        ExpiryJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ExpiryQueue.Arn
+            BatchSize: 1
+
+  ExpiryWarningFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-${Environment}-expiry-warning"
+      CodeUri: ../backend
+      Handler: handlers/expiry.warningHandler
+      Timeout: 60
+      Environment:
+        Variables:
+          SES_SENDER: !Ref SesSender
+          NOTIFY_TO: !Ref NotifyEmail
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref AlbumTable }
+        - Statement:
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: "*"
+              Condition:
+                StringEquals: { "aws:RequestedRegion": !Ref AWS::Region }
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeExpiry
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: [!GetAtt ExpiryDeleteFn.Arn, !GetAtt ExpiryWarningFn.Arn]
+
+  # ------------------------------------------------------------------ logs
+  AlbumsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AlbumsFn}", RetentionInDays: !Ref LogRetentionDays }
+  UploadsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${UploadsFn}", RetentionInDays: !Ref LogRetentionDays }
+  BuildsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${BuildsFn}", RetentionInDays: !Ref LogRetentionDays }
+  MarkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${MarkerBuilderFn}", RetentionInDays: !Ref LogRetentionDays }
+  ExpiryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${ExpiryDeleteFn}", RetentionInDays: !Ref LogRetentionDays }
+
+  # ---------------------------------------------------------------- alarms
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "${StackPrefix}-${Environment}-alarms"
+      Tags: [{ Key: Project, Value: ar-wedding-moments }]
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotifyEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref NotifyEmail
+      TopicArn: !Ref AlarmTopic
+
+  BuildDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${StackPrefix}-${Environment}-build-dlq"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Dimensions: [{ Name: QueueName, Value: !GetAtt BuildDLQ.QueueName }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+  MarkerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${StackPrefix}-${Environment}-marker-errors"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions: [{ Name: FunctionName, Value: !Ref MarkerBuilderFn }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${StackPrefix}-${Environment}-api-5xx"
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      Dimensions: [{ Name: ApiId, Value: !Ref HttpApi }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 4
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+Conditions:
+  HasNotifyEmail: !Not [!Equals [!Ref NotifyEmail, ""]]
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  MediaBucketName:
+    Value: !Ref MediaBucket
+  TableName:
+    Value: !Ref AlbumTable
+  CloudFrontDomain:
+    Value: !GetAtt MediaDistribution.DomainName
+  CloudFrontOrigin:
+    Value: !Sub "https://${MediaDistribution.DomainName}"
+  UserPoolId:
+    Value: !Ref AdminUserPool
+  UserPoolClientId:
+    Value: !Ref AdminUserPoolClient
+  BuildQueueUrl:
+    Value: !Ref BuildQueue
+  SchedulerRoleArn:
+    Value: !GetAtt SchedulerRole.Arn
+    Description: Use EventBridge Scheduler with this role for per-album expiry warning/deletion schedules

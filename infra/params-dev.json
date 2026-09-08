@@ -1,0 +1,9 @@
+{
+  "Environment": "dev",
+  "StackPrefix": "ar-wedding",
+  "VercelOrigin": "https://ar-wedding-dev.vercel.app",
+  "CanonicalOrigin": "https://ar-wedding-dev.vercel.app",
+  "NotifyEmail": "",
+  "SesSender": "",
+  "LogRetentionDays": 7
+}

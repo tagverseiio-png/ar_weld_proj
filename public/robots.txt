@@ -1,0 +1,14 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /ar/
+
+User-agent: Googlebot
+Allow: /
+Disallow: /admin
+Disallow: /ar/
+
+User-agent: Bingbot
+Allow: /
+Disallow: /admin
+Disallow: /ar/

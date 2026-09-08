@@ -234,7 +234,7 @@ Resources:
       SupportedIdentityProviders: [COGNITO]
       AccessTokenValidity: 1
       IdTokenValidity: 1
-      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH]
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_ADMIN_USER_PASSWORD_AUTH]
 
   HttpApi:
     Type: AWS::Serverless::HttpApi
@@ -294,9 +294,11 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-albums"
       CodeUri: ../backend
-      Handler: handlers/albums.handler
+      Handler: dist/albums.handler
       Environment:
-        Variables: { ALLOW_MOCK_AUTH: "false" }
+        Variables:
+          EXPIRY_QUEUE_URL: !Ref ExpiryQueue
+          ALLOW_MOCK_AUTH: "false"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref AlbumTable }
         - SQSSendMessagePolicy: { QueueName: !GetAtt ExpiryQueue.QueueName }
@@ -312,7 +314,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-uploads"
       CodeUri: ../backend
-      Handler: handlers/uploads.handler
+      Handler: dist/uploads.handler
       Environment:
         Variables: { ALLOW_MOCK_AUTH: "false" }
       Policies:
@@ -329,7 +331,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-builds"
       CodeUri: ../backend
-      Handler: handlers/builds.handler
+      Handler: dist/builds.handler
       Environment:
         Variables:
           BUILD_QUEUE_URL: !Ref BuildQueue
@@ -350,7 +352,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-marker-builder"
       CodeUri: ../backend
-      Handler: handlers/markerBuilder.handler
+      Handler: dist/markerBuilder.handler
       MemorySize: 2048
       Timeout: 300
       Environment:
@@ -376,7 +378,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-expiry-delete"
       CodeUri: ../backend
-      Handler: handlers/expiry.deleteHandler
+      Handler: dist/expiry.deleteHandler
       Timeout: 300
       Environment:
         Variables:
@@ -404,7 +406,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${StackPrefix}-${Environment}-expiry-warning"
       CodeUri: ../backend
-      Handler: handlers/expiry.warningHandler
+      Handler: dist/expiry.warningHandler
       Timeout: 60
       Environment:
         Variables:

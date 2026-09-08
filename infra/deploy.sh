@@ -18,6 +18,10 @@ fi
 # skipping blanks (SAM rejects empty values like NotifyEmail=).
 OVERRIDES=$(python3 -c "import json;print(' '.join(f\"{k}={v}\" for k,v in json.load(open('$PARAMS')).items() if v not in ('', None)))")
 
+echo "==> bundle backend (TS -> JS, Lambda runs plain Node)"
+./node_modules/.bin/esbuild backend/handlers/*.ts --bundle --platform=node \
+  --format=cjs --target=node24 --outdir=backend/dist --log-level=warning
+
 echo "==> sam build"
 sam build --template-file infra/template.yaml
 echo "==> sam deploy ${STACK} (${REGION})"

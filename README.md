@@ -17,7 +17,7 @@ printed photo, and the matching video plays over it. No app install.
 ## Local development (mock mode, no AWS)
 
 ```sh
-npm install --ignore-scripts   # mind-ar pulls canvas (native); not needed for web
+npm install
 npm run dev
 ```
 

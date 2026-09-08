@@ -64,20 +64,27 @@ export function ArExperience({
     async function start() {
       try {
         setStatus("starting");
-        // Pinned versions: mind-ar@1.2.5 + three@0.149.0 (MIT, release-age > 24h).
-        // three is pinned pre-0.152 because mind-ar 1.2.5 imports sRGBEncoding.
-        const [{ MindARThree }, THREE] = await Promise.all([
-          // mind-ar ships the three integration under dist; try both entry shapes.
-          import("mind-ar/dist/mindar-image-three.prod.js").catch(() => import("mind-ar")),
-          import("three"),
-        ]);
+        // WebAR runtime is vendored in public/vendor (mind-ar@1.2.5 +
+        // three@0.149.0, MIT) and loaded at runtime so `npm install` stays
+        // free of mind-ar's native `canvas` dependency (unbuildable on
+        // Vercel). three is pinned pre-0.152: mind-ar imports sRGBEncoding.
+        // @vite-ignore keeps these as runtime URLs (served from our domain).
+        const origin = window.location.origin;
+        const vendorUrl: string = `${origin}/vendor/mindar-image-three.prod.js`;
+        const threeUrl: string = `${origin}/vendor/three.module.js`;
+        const [vendor, threeNs] = (await Promise.all([
+          import(/* @vite-ignore */ vendorUrl),
+          import(/* @vite-ignore */ threeUrl),
+        ])) as [
+          { MindARThree?: new (args: unknown) => Record<string, unknown> },
+          Record<string, unknown>,
+        ];
+        const MindAR = vendor.MindARThree;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const THREE = threeNs as any;
+        if (!MindAR) throw new Error("AR engine failed to load.");
         const el = containerRef.current;
         if (cancelled || !el || !el.isConnected) return;
-        const MindAR = (MindARThree ?? (await import("mind-ar")).MindARThree) as new (
-          args: unknown,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ) => any;
-        if (!MindAR) throw new Error("AR engine failed to load.");
 
         mindar = new MindAR({
           container,

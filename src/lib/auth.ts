@@ -71,11 +71,29 @@ function cognitoConfigured(): boolean {
   return !!(config.cognito.domain && config.cognito.clientId && config.cognito.redirectUri);
 }
 
+const MOCK_ADMIN_EMAIL = "studio@example.com";
+
+/**
+ * Unsigned mock JWT (local prototype only — never accepted by AWS).
+ * Shaped like a real token so the same decode/expiry path is exercised.
+ */
+function mockIdToken(): string {
+  const encode = (obj: unknown) =>
+    btoa(JSON.stringify(obj)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const header = encode({ alg: "none", typ: "JWT" });
+  const payload = encode({
+    sub: "mock-admin",
+    email: MOCK_ADMIN_EMAIL,
+    exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+  });
+  return `${header}.${payload}.mock`;
+}
+
 /** Redirect to Cognito Hosted UI login. Falls back to mock mode when unconfigured. */
 export function login(): void {
   if (!cognitoConfigured()) {
     // Local prototype: mark a mock session so admin UX is testable offline.
-    storage()?.setItem(ID_KEY, "mock-id-token");
+    storage()?.setItem(ID_KEY, mockIdToken());
     storage()?.setItem(ACCESS_KEY, "mock-access-token");
     emit();
     return;
@@ -92,7 +110,7 @@ export function login(): void {
 /** Exchange an authorization code for tokens (PKCE-less confidential UX kept server-simple for single admin). */
 export async function handleAuthCallback(code: string): Promise<void> {
   if (!cognitoConfigured()) {
-    storage()?.setItem(ID_KEY, "mock-id-token");
+    storage()?.setItem(ID_KEY, mockIdToken());
     emit();
     return;
   }

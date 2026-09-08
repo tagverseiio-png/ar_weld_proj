@@ -99,10 +99,16 @@ export function ArExperience({
 
         manifest.pages.forEach((page) => {
           const video = document.createElement("video");
-          video.src = page.videoUrl;
+          // crossOrigin BEFORE src: the fetch starts on src assignment, so a
+          // late crossOrigin leaves the video CORS-tainted and WebGL texture
+          // upload throws SecurityError the moment a target is found.
           video.crossOrigin = "anonymous";
+          video.src = page.videoUrl;
           video.loop = true;
-          video.muted = false;
+          // Muted by default: iOS Safari blocks unmuted autoplay outside a
+          // tap handler, which silently freezes the tracked plane on sound.
+          // Guests get audio from the bottom-sheet player (has controls).
+          video.muted = true;
           video.playsInline = true;
           video.preload = "auto";
           videos.push(video);
@@ -133,8 +139,14 @@ export function ArExperience({
         }
         setStatus("tracking");
         const renderLoop = () => {
-          renderer.render(scene, camera);
-          raf = requestAnimationFrame(renderLoop);
+          // A single throwing frame (e.g. a tainted video texture) must not
+          // kill the whole loop — otherwise the camera view freezes dead.
+          try {
+            renderer.render(scene, camera);
+          } catch {
+            /* keep tracking alive; next frame retries */
+          }
+          if (!cancelled) raf = requestAnimationFrame(renderLoop);
         };
         renderLoop();
       } catch (e) {

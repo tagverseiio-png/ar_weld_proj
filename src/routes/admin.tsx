@@ -1,4 +1,4 @@
-import { createFileRoute, Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Images, LogOut, Settings, Upload } from "lucide-react";
 import { STUDIO_CITY, STUDIO_NAME } from "@/lib/mock-api";
 import { login, logout, useAuthState } from "@/lib/auth";
@@ -17,6 +17,18 @@ const nav = [
 function AdminLayout() {
   const { signedIn, email } = useAuthState();
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // The OAuth callback must render ungated: it completes sign-in by
+  // exchanging ?code= for tokens. Gating it deadlocks the login flow
+  // (callback -> sign-in screen -> Cognito -> callback ...).
+  const isCallback = pathname === "/admin/callback";
+  if (isCallback) {
+    return (
+      <div className="min-h-screen">
+        <Outlet />
+      </div>
+    );
+  }
 
   // Single-studio gate: every admin mutation is server-enforced (Cognito JWT
   // authorizer). The UI gate below is UX only — never a security boundary.

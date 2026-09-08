@@ -3,6 +3,8 @@ import { motion } from "framer-motion";
 import { Camera, LayoutGrid } from "lucide-react";
 import heroImage from "@/assets/album-1.jpg";
 import { STUDIO_CITY, STUDIO_NAME } from "@/lib/mock-api";
+import { prodApi } from "@/lib/api";
+import { useAlbums } from "@/hooks/useAlbums";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -67,13 +69,10 @@ function Landing() {
           transition={{ delay: 0.45 }}
           className="mt-9 flex flex-wrap justify-center gap-3"
         >
-          <Link
-            to="/ar/$albumId"
-            params={{ albumId: "meera-arjun" }}
-            className="flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground"
-          >
-            <Camera className="size-4" /> Try the guest scan
-          </Link>
+          {/* In production this resolves to a REAL published album so guests
+              never land on the mock demo id (which only shows Simulate Scan).
+              Falls back to the dashboard when nothing is published yet. */}
+          <GuestScanButton />
           <Link
             to="/admin"
             className="flex items-center gap-2 rounded-full border border-gold-soft bg-card px-6 py-3 text-sm font-medium text-primary"
@@ -83,5 +82,40 @@ function Landing() {
         </motion.div>
       </div>
     </main>
+  );
+}
+
+function GuestScanButton() {
+  const cls =
+    "flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground";
+  // Local prototype (no API): the mock demo id is the only thing that works.
+  if (!prodApi.configured) {
+    return (
+      <Link to="/ar/$albumId" params={{ albumId: "meera-arjun" }} className={cls}>
+        <Camera className="size-4" /> Try the guest scan
+      </Link>
+    );
+  }
+  return <ProdGuestScanButton cls={cls} />;
+}
+
+function ProdGuestScanButton({ cls }: { cls: string }) {
+  const { data } = useAlbums();
+  const ready = (data ?? []).find(
+    (a) =>
+      (a as { status?: string }).status === "ready" &&
+      typeof (a as { publicId?: string }).publicId === "string",
+  ) as { publicId: string } | undefined;
+  if (!ready) {
+    return (
+      <Link to="/admin" className={cls}>
+        <Camera className="size-4" /> Try the guest scan
+      </Link>
+    );
+  }
+  return (
+    <Link to="/ar/$albumId" params={{ albumId: ready.publicId }} className={cls}>
+      <Camera className="size-4" /> Try the guest scan
+    </Link>
   );
 }

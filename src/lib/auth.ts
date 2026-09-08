@@ -154,19 +154,63 @@ export async function handleAuthCallback(code: string): Promise<void> {
 }
 
 export function logout(): void {
-  storage()?.removeItem(ACCESS_KEY);
-  storage()?.removeItem(ID_KEY);
-  try {
-    storage()?.removeItem(REFRESH_KEY);
-  } catch {
-    /* ignore */
-  }
-  emit();
+  clearSession();
   if (cognitoConfigured() && typeof window !== "undefined") {
     const params = new URLSearchParams({
       client_id: config.cognito.clientId,
       logout_uri: window.location.origin,
     });
     window.location.assign(`https://${config.cognito.domain}/logout?${params}`);
+  }
+}
+
+/** Drop local tokens and flip the UI back to the sign-in screen (no redirect). */
+export function clearSession(): void {
+  try {
+    storage()?.removeItem(ACCESS_KEY);
+    storage()?.removeItem(ID_KEY);
+    storage()?.removeItem(REFRESH_KEY);
+  } catch {
+    /* ignore */
+  }
+  emit();
+}
+
+/**
+ * Silent session renewal via the stored refresh token (Cognito OAuth2).
+ * Returns true when fresh tokens were stored. False when there is no refresh
+ * token, Cognito is unconfigured (mock sessions never refresh), or the
+ * refresh itself was rejected (e.g. revoked) — caller must sign in again.
+ */
+export async function refreshTokens(): Promise<boolean> {
+  if (!cognitoConfigured()) return false;
+  const refreshToken = (() => {
+    try {
+      return storage()?.getItem(REFRESH_KEY);
+    } catch {
+      return null;
+    }
+  })();
+  if (!refreshToken) return false;
+  try {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: config.cognito.clientId,
+      refresh_token: refreshToken,
+    });
+    const res = await fetch(`https://${config.cognito.domain}/oauth2/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) return false;
+    const tokens = (await res.json()) as { access_token?: string; id_token?: string };
+    if (!tokens.id_token) return false;
+    storage()?.setItem(ID_KEY, tokens.id_token);
+    if (tokens.access_token) storage()?.setItem(ACCESS_KEY, tokens.access_token);
+    emit();
+    return true;
+  } catch {
+    return false;
   }
 }

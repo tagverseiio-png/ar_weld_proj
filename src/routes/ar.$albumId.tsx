@@ -46,7 +46,19 @@ function GuestArPage() {
     let alive = true;
     async function run() {
       // Production guest path: static CloudFront manifest, no Lambda/DDB.
-      if (prodApi.configured && looksLikePublicId(albumId)) {
+      if (prodApi.configured) {
+        // Internal/demo ids (e.g. "meera-arjun") are not guest links. Showing
+        // the mock demo here confused real scanning, so fail loudly instead.
+        if (!looksLikePublicId(albumId)) {
+          if (alive)
+            setState({
+              kind: "error",
+              code: "NOT_FOUND",
+              message:
+                "This is not a guest QR link. Open an album in the studio dashboard and use its QR link for a real scan.",
+            });
+          return;
+        }
         try {
           const manifest = await fetchGuestManifest(albumId);
           if (alive) setState({ kind: "manifest", manifest });

@@ -1,5 +1,5 @@
 import { config, isProductionApiConfigured } from "./config";
-import { getIdToken } from "./auth";
+import { clearSession, getIdToken, refreshTokens } from "./auth";
 import type {
   AlbumRecord,
   ApiError,
@@ -15,7 +15,7 @@ import type {
  * When VITE_API_BASE_URL is unset, callers must fall back to mock-api.
  */
 
-async function req<T>(path: string, init?: RequestInit, auth = true): Promise<T> {
+async function req<T>(path: string, init?: RequestInit, auth = true, retried = false): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (init?.headers) {
     for (const [k, v] of new Headers(init.headers).entries()) headers[k] = v;
@@ -31,16 +31,25 @@ async function req<T>(path: string, init?: RequestInit, auth = true): Promise<T>
     headers["authorization"] = `Bearer ${token}`;
   }
   const res = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers });
+  // Sessions expire after ~1h. On 401, silently renew once via the refresh
+  // token and retry; if renewal fails, drop to the sign-in screen instead of
+  // failing every mutation (delete/save/publish) with a cryptic error.
+  if (res.status === 401 && auth && !retried && (await refreshTokens())) {
+    return req<T>(path, init, auth, true);
+  }
   const text = await res.text();
   const data = text ? (JSON.parse(text) as T) : (undefined as T);
-  if (!res.ok)
+  if (!res.ok) {
+    if (res.status === 401 && auth) clearSession();
     throw (
       (data as ApiError) ?? {
         error: "AR_ALBUM_ERROR",
-        code: "REQUEST_FAILED",
-        message: `HTTP ${res.status}`,
+        code: res.status === 401 ? "SESSION_EXPIRED" : "REQUEST_FAILED",
+        message:
+          res.status === 401 ? "Session expired. Please sign in again." : `HTTP ${res.status}`,
       }
     );
+  }
   return data;
 }
 

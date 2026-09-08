@@ -236,6 +236,12 @@ Resources:
       IdTokenValidity: 1
       ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_ADMIN_USER_PASSWORD_AUTH]
 
+  AdminUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${StackPrefix}-${Environment}-studio"
+      UserPoolId: !Ref AdminUserPool
+
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -539,6 +545,8 @@ Outputs:
     Value: !Ref AdminUserPool
   UserPoolClientId:
     Value: !Ref AdminUserPoolClient
+  CognitoDomain:
+    Value: !Sub "${AdminUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
   BuildQueueUrl:
     Value: !Ref BuildQueue
   SchedulerRoleArn:

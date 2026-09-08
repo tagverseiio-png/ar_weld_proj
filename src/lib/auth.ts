@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { config } from "./config";
 
 /**
@@ -60,8 +60,17 @@ export function isSignedIn(): boolean {
 }
 
 export function useAuthState(): { signedIn: boolean; email: string | null } {
-  const snapshot = useSyncExternalStore(subscribe, () => (isSignedIn() ? "1" : "0"));
-  const payload = decodeJwtPayload(getIdToken());
+  // Gate on mount so the first client render matches SSR ("signed out").
+  // Without this, a stored token makes hydration render the dashboard while
+  // the server rendered sign-in -> React #419 + discarded SSR HTML.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+  const getSnapshot = useCallback(() => (hydrated && isSignedIn() ? "1" : "0"), [hydrated]);
+  const getServerSnapshot = useCallback(() => "0", []);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const payload = hydrated ? decodeJwtPayload(getIdToken()) : null;
   const rawEmail = payload?.["email"];
   const email = typeof rawEmail === "string" ? rawEmail : null;
   return { signedIn: snapshot === "1", email };

@@ -148,12 +148,12 @@ export function ArExperience({
           container,
           imageTargetSrc: manifest.marker.url,
           maxTrack: 1,
-          // One-euro filter: minimal cutoff, tiny beta -> heavily smoothed
-          // pose. On glossy/screen targets the matched features jitter
-          // frame to frame; strong smoothing keeps the overlay anchored
-          // (costs a little lag, fine for video playback).
+          // One-euro filter: minimal cutoff with a modest beta — the
+          // photo->video reference builds converge on beta ~0.001.
+          // Anything much smaller lags behind the phone (reads as drift);
+          // anything much larger jitters frame to frame on glossy targets.
           filterMinCF: 0.0001,
-          filterBeta: 0.0001,
+          filterBeta: 0.001,
           // Tolerate brief detection dropouts so a shaky hand doesn't
           // flip found/lost every few frames (which looks like jitter).
           // Warmup needs several consistent frames before "found" — glossy
@@ -177,11 +177,55 @@ export function ArExperience({
         // live stream dimensions. Doing this by hand drifts the overlay off
         // the photo. iOS reports videoWidth/videoHeight late, so keep
         // re-asserting until the stream settles.
+        //
+        // Belt and braces: resize() measures container.clientWidth/Height
+        // ONCE per call, and on iOS that measurement can go stale (browser
+        // chrome animating, safe-area settling) — the video then covers
+        // only part of the container (the dark right strip) while the 3D
+        // projection assumes full coverage (overlay offset/shrunk). So
+        // after every resize we re-measure fresh and pin the same cover
+        // math ourselves; when the measurement is correct this is a no-op.
+        // resize()'s own `canvas.style.left/top = 0` assignments are plain
+        // numbers (dropped by CSSOM), so pin those explicitly too.
         const applyCover = () => {
           const v = mindar?.video as HTMLVideoElement | undefined;
           if (!v || !v.videoWidth || !v.videoHeight) return;
           try {
             mindar.resize?.();
+          } catch {
+            /* ignore */
+          }
+          try {
+            const box = (mindar.container as HTMLElement | undefined) ?? container;
+            const cw = box.clientWidth;
+            const ch = box.clientHeight;
+            if (!cw || !ch) return;
+            const l = v.videoWidth / v.videoHeight;
+            const p = cw / ch;
+            let u: number;
+            let o: number;
+            if (l > p) {
+              o = ch;
+              u = o * l;
+            } else {
+              u = cw;
+              o = u / l;
+            }
+            v.style.width = `${u}px`;
+            v.style.height = `${o}px`;
+            v.style.left = `${-(u - cw) / 2}px`;
+            v.style.top = `${-(o - ch) / 2}px`;
+            const r = mindar.renderer as { domElement?: HTMLCanvasElement } | undefined;
+            const cssR = (mindar as { cssRenderer?: { domElement?: HTMLCanvasElement } })
+              .cssRenderer;
+            for (const cv of [r?.domElement, cssR?.domElement]) {
+              if (!cv) continue;
+              cv.style.position = "absolute";
+              cv.style.left = "0px";
+              cv.style.top = "0px";
+              cv.style.width = `${cw}px`;
+              cv.style.height = `${ch}px`;
+            }
           } catch {
             /* ignore */
           }
@@ -191,16 +235,28 @@ export function ArExperience({
         camEvents.forEach((ev) => camVideo?.addEventListener(ev, applyCover));
         window.addEventListener("resize", applyCover);
         window.addEventListener("orientationchange", applyCover);
+        // iOS toolbar collapse/expand changes the visual viewport without a
+        // window resize; the container's measured size can also change at
+        // any time (rotation animation, safe-area). Observe both.
+        const vv = window.visualViewport;
+        vv?.addEventListener("resize", applyCover);
+        let ro: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== "undefined") {
+          ro = new ResizeObserver(() => applyCover());
+          ro.observe(container);
+        }
         let coverPolls = 0;
         const coverPoll = window.setInterval(() => {
           applyCover();
-          if (++coverPolls > 15) window.clearInterval(coverPoll);
-        }, 400);
+          if (++coverPolls > 30) window.clearInterval(coverPoll);
+        }, 500);
         cleanups.push(() => {
           window.clearInterval(coverPoll);
           camEvents.forEach((ev) => camVideo?.removeEventListener(ev, applyCover));
           window.removeEventListener("resize", applyCover);
           window.removeEventListener("orientationchange", applyCover);
+          vv?.removeEventListener("resize", applyCover);
+          ro?.disconnect();
         });
 
         // Anchors only — no media upfront. Each video streams from storage
@@ -218,6 +274,45 @@ export function ArExperience({
           };
           return anchor;
         });
+
+        // On-device diagnostics: open the guest link with ?arDebug=1 to see
+        // live layout numbers (window, container, camera video, GL canvas)
+        // plus tracking state. Screenshot this if the feed or overlay
+        // still looks wrong — it shows exactly which layer mis-measures.
+        try {
+          if (new URLSearchParams(window.location.search).has("arDebug")) {
+            const dbg = document.createElement("div");
+            dbg.style.cssText =
+              "position:absolute;top:8px;left:8px;z-index:50;max-width:62%;pointer-events:none;" +
+              "font:10px/1.5 monospace;white-space:pre-wrap;color:#0f0;background:rgba(0,0,0,.65);" +
+              "padding:6px 8px;border-radius:8px;";
+            container.appendChild(dbg);
+            const tick = () => {
+              const cv = (mindar.renderer as { domElement?: HTMLCanvasElement } | undefined)
+                ?.domElement;
+              const cr = cv?.getBoundingClientRect();
+              const vr = container.getBoundingClientRect();
+              const cam = mindar.video as HTMLVideoElement | undefined;
+              dbg.textContent =
+                `win ${window.innerWidth}x${window.innerHeight} ` +
+                `vv ${Math.round(vv?.width ?? 0)}x${Math.round(vv?.height ?? 0)} dpr ${window.devicePixelRatio}\n` +
+                `box ${container.clientWidth}x${container.clientHeight} ` +
+                `rect ${Math.round(vr.width)}x${Math.round(vr.height)}\n` +
+                `cam ${cam?.videoWidth ?? 0}x${cam?.videoHeight ?? 0} ` +
+                `style ${cam?.style.width}/${cam?.style.height} @${cam?.style.left},${cam?.style.top}\n` +
+                `gl ${Math.round(cr?.width ?? 0)}x${Math.round(cr?.height ?? 0)} ` +
+                `tracked=${playing.idx >= 0 ? playing.idx : "no"}`;
+            };
+            const dbgTimer = window.setInterval(tick, 500);
+            tick();
+            cleanups.push(() => {
+              window.clearInterval(dbgTimer);
+              dbg.remove();
+            });
+          }
+        } catch {
+          /* diagnostics must never break AR */
+        }
 
         async function onFound(page: Page) {
           if (playing.idx === page.markerIndex) {

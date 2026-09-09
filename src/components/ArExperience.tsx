@@ -112,6 +112,11 @@ export function ArExperience({
           filterBeta: 0.001,
         });
         renderer = mindar.renderer;
+        // MindAR renders at devicePixelRatio (3x on most phones) — full-screen
+        // WebGL at 3x every frame overheats mid-range devices and janks the
+        // whole page. Cap the raster scale; tracking still runs on the camera
+        // frames at full fidelity.
+        renderer.setPixelRatio?.(Math.min(window.devicePixelRatio || 1, 1.5));
         const scene = mindar.scene;
         const camera = mindar.camera;
 
@@ -214,7 +219,7 @@ export function ArExperience({
   }, [started, manifest]);
 
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0 isolate">
       <div
         ref={containerRef}
         className="absolute inset-0 [&>canvas]:absolute [&>canvas]:inset-0 [&>canvas]:size-full [&>video]:absolute [&>video]:inset-0 [&>video]:size-full [&>video]:object-cover"

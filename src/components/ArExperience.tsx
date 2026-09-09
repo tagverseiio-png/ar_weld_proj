@@ -64,10 +64,16 @@ export function ArExperience({
       anchor: ThreeObj | null;
       dispose: Array<() => void>;
     } = { idx: -1, video: null, plane: null, anchor: null, dispose: [] };
+    // Marker that just played to its end. While the photo stays in frame,
+    // re-acquiring it must NOT replay the memory (that read as an endless
+    // loop). Cleared when the photo actually leaves the frame, so guests
+    // rewatch by pointing away and back.
+    let lastEndedIdx = -1;
     const cleanups: Array<() => void> = [];
 
     function stopPlayback() {
       const had = playing.idx >= 0;
+      const endedIdx = playing.idx;
       playing.video?.pause();
       if (playing.plane && playing.anchor) playing.anchor.group.remove(playing.plane);
       playing.dispose.forEach((d) => {
@@ -90,7 +96,10 @@ export function ArExperience({
       playing.plane = null;
       playing.anchor = null;
       playing.dispose = [];
-      if (had) endedRef.current?.();
+      if (had) {
+        lastEndedIdx = endedIdx;
+        endedRef.current?.();
+      }
     }
 
     async function start() {
@@ -141,6 +150,10 @@ export function ArExperience({
           maxTrack: 1,
           filterMinCF: 0.0001,
           filterBeta: 0.001,
+          // Tolerate brief detection dropouts so a shaky hand doesn't
+          // flip found/lost every few frames (which looks like jitter).
+          warmupTolerance: 5,
+          missTolerance: 15,
         });
         renderer = mindar.renderer;
         // MindAR renders at devicePixelRatio (3x on most phones) — full-screen
@@ -188,12 +201,29 @@ export function ArExperience({
         const anchors = manifest.pages.map((page) => {
           const anchor = mindar.addAnchor(page.markerIndex);
           anchor.onTargetFound = () => void onFound(page);
-          anchor.onTargetLost = () => lostRef.current?.(page.markerIndex);
+          anchor.onTargetLost = () => {
+            // Photo left the frame: pause the memory here (it resumes in
+            // place when the photo returns) and allow a fresh replay of
+            // anything that already finished.
+            if (playing.idx === page.markerIndex) playing.video?.pause();
+            lastEndedIdx = -1;
+            lostRef.current?.(page.markerIndex);
+          };
           return anchor;
         });
 
         async function onFound(page: Page) {
-          if (playing.idx === page.markerIndex) return;
+          if (playing.idx === page.markerIndex) {
+            // Same photo re-acquired after tracking flicker: resume exactly
+            // where it paused — never restart, never recreate the video.
+            void playing.video?.play().catch(() => undefined);
+            return;
+          }
+          if (lastEndedIdx === page.markerIndex) {
+            // This memory just finished and the photo never left the frame;
+            // re-finding it must not restart the show.
+            return;
+          }
           stopPlayback();
           foundRef.current(page.markerIndex);
           const idx = manifest.pages.findIndex((p) => p === page);
@@ -257,6 +287,13 @@ export function ArExperience({
           video.addEventListener("loadedmetadata", fitUVs);
           video.addEventListener("ended", () => stopPlayback());
           video.addEventListener("error", () => stopPlayback());
+          // iOS can reject the first play() because metadata hasn't arrived
+          // yet; retry once the element is actually able to play.
+          video.addEventListener("canplay", () => {
+            if (playing.video === video && video.paused) {
+              void video.play().catch(() => undefined);
+            }
+          });
           playing.dispose.push(() => {
             video.removeEventListener("loadedmetadata", fitUVs);
           });

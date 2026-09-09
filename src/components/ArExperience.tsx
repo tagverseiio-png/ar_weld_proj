@@ -152,7 +152,10 @@ export function ArExperience({
           filterBeta: 0.001,
           // Tolerate brief detection dropouts so a shaky hand doesn't
           // flip found/lost every few frames (which looks like jitter).
-          warmupTolerance: 5,
+          // Warmup needs several consistent frames before "found" — glossy
+          // targets (photo behind glass, screens) produce glare flashes
+          // that must not lock the anchor.
+          warmupTolerance: 10,
           missTolerance: 15,
         });
         renderer = mindar.renderer;
@@ -256,6 +259,21 @@ export function ArExperience({
           playing.dispose.push(() => material.dispose());
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const plane = new (THREE as any).Mesh(geometry, material);
+          // Gold outline on the photo rect: makes the live tracking lock
+          // visible (this is an AR overlay, not a pasted picture) and
+          // shows the exact anchor boundary.
+          const outlineGeo = new (THREE as ThreeObj).EdgesGeometry(geometry);
+          const outlineMat = new (THREE as ThreeObj).LineBasicMaterial({
+            color: 0xe6b54a,
+            transparent: true,
+            opacity: 0.9,
+          });
+          const outline = new (THREE as ThreeObj).LineSegments(outlineGeo, outlineMat);
+          plane.add(outline);
+          playing.dispose.push(() => {
+            outlineGeo.dispose();
+            outlineMat.dispose();
+          });
           playing.plane = plane;
           // object-fit: cover for the texture — crop the video's UVs to its
           // aspect so it fills the photo rect without distortion.

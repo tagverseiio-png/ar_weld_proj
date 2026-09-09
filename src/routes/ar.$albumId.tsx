@@ -138,13 +138,13 @@ function GuestArPage() {
         <ArExperience
           manifest={manifest}
           started={started}
-          activeIndex={arActiveIndex}
           onTargetFound={(i) => setArActiveIndex(i)}
           onTargetLost={() => setArActiveIndex(null)}
+          onPlaybackEnded={() => setArActiveIndex(null)}
           onError={(m) => setArError(m)}
         />
       )}
-      <AnimatedCameraFrame />
+      {!(manifest && started) && <AnimatedCameraFrame />}
 
       <motion.header
         initial={{ opacity: 0, y: -14 }}
@@ -204,7 +204,8 @@ function GuestArPage() {
         transition={{ delay: 0.4 }}
         className="absolute inset-x-0 bottom-32 z-10 px-8 text-center"
       >
-        {state.kind === "error" ? null : !started && manifest ? (
+        {state.kind === "error" || (manifest && arActiveIndex !== null) ? null : !started &&
+          manifest ? (
           <div className="flex flex-col items-center gap-3">
             <p className="flex items-center justify-center gap-2 text-sm text-white/75">
               <Camera className="size-4 text-gold" />
@@ -271,7 +272,7 @@ function GuestArPage() {
             <p className="text-[11px] tracking-[0.3em] text-muted-foreground uppercase">
               Now Playing
             </p>
-            <h2 className="mt-1 text-2xl">{currentMock?.title ?? currentManifestPage?.title}</h2>
+            <h2 className="mt-1 text-2xl">{currentMock?.title}</h2>
             <div className="relative mt-4 aspect-video overflow-hidden rounded-xl bg-black">
               <video
                 key={currentMock.id}

@@ -73,8 +73,13 @@ async function listAlbums() {
   const res = await ddb().send(
     new ScanCommand({
       TableName: tableName(),
-      FilterExpression: "SK = :meta AND entity = :album",
-      ExpressionAttributeValues: { ":meta": skMeta(), ":album": "ALBUM" },
+      FilterExpression: "SK = :meta AND entity = :album AND #status <> :expired",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":meta": skMeta(),
+        ":album": "ALBUM",
+        ":expired": "expired",
+      },
       Limit: 100,
     }),
   );

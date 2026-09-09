@@ -21,8 +21,9 @@ type Page = GuestManifest["pages"][number];
  * - Zero media is preloaded. Anchors exist only; each memory's video is
  *   fetched from storage the moment its photo is found, and discarded on
  *   end — so data/decode cost stays at "one video at a time".
- * - While a memory plays the MindAR tracking loop is stopped (its WASM
- *   inference is the dominant CPU/heat cost) and resumed afterwards.
+ * - Tracking stays LIVE while a memory plays so the plane keeps following
+ *   the photo as the phone moves; the CPU savings come from streaming a
+ *   single video on demand and capping the WebGL raster scale.
  * - WebGL renders below devicePixelRatio to keep the raster affordable.
  */
 export function ArExperience({
@@ -65,7 +66,7 @@ export function ArExperience({
     } = { idx: -1, video: null, plane: null, anchor: null, dispose: [] };
     const cleanups: Array<() => void> = [];
 
-    function stopPlayback(resumeTracking: boolean) {
+    function stopPlayback() {
       const had = playing.idx >= 0;
       playing.video?.pause();
       if (playing.plane && playing.anchor) playing.anchor.group.remove(playing.plane);
@@ -89,13 +90,6 @@ export function ArExperience({
       playing.plane = null;
       playing.anchor = null;
       playing.dispose = [];
-      if (resumeTracking && mindar?.controller?.processVideo && mindar?.video) {
-        try {
-          mindar.controller.processVideo(mindar.video);
-        } catch {
-          /* ignore */
-        }
-      }
       if (had) endedRef.current?.();
     }
 
@@ -194,16 +188,8 @@ export function ArExperience({
 
         async function onFound(page: Page) {
           if (playing.idx === page.markerIndex) return;
-          stopPlayback(true);
+          stopPlayback();
           foundRef.current(page.markerIndex);
-          // Pause the tracker while this memory plays: the WASM tracking
-          // loop is the dominant CPU/heat cost and nothing else can be
-          // detected while the guest watches.
-          try {
-            mindar.controller?.stopProcessVideo?.();
-          } catch {
-            /* ignore */
-          }
           const idx = manifest.pages.findIndex((p) => p === page);
           playing.idx = page.markerIndex;
           playing.anchor = anchors[idx];
@@ -238,8 +224,8 @@ export function ArExperience({
             else plane.scale.set(1, 1 / aspect, 1);
           };
           video.addEventListener("loadedmetadata", fitPlane);
-          video.addEventListener("ended", () => stopPlayback(true));
-          video.addEventListener("error", () => stopPlayback(true));
+          video.addEventListener("ended", () => stopPlayback());
+          video.addEventListener("error", () => stopPlayback());
           playing.dispose.push(() => {
             video.removeEventListener("loadedmetadata", fitPlane);
           });

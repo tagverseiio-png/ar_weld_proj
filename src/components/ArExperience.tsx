@@ -56,7 +56,7 @@ export function ArExperience({
     let raf = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type ThreeObj = any;
-    // Currently playing memory (at most one — tracking is paused meanwhile).
+    // Currently playing memory (at most one at a time).
     const playing: {
       idx: number;
       video: HTMLVideoElement | null;
@@ -151,30 +151,36 @@ export function ArExperience({
         const scene = mindar.scene;
         const camera = mindar.camera;
 
-        // Keep the camera feed covering the viewport. MindAR computes its
-        // cover letterbox once at init, which can run before the stream
-        // reports videoWidth/videoHeight (iOS Safari) — leaving the feed
-        // letterboxed. Re-assert with live dimensions.
+        // Keep the camera feed and the AR canvas in perfect lockstep by
+        // delegating to MindAR's own resize(): it sizes the video (cover),
+        // the WebGL canvas, and re-derives the camera projection from the
+        // live stream dimensions. Doing this by hand drifts the overlay off
+        // the photo. iOS reports videoWidth/videoHeight late, so keep
+        // re-asserting until the stream settles.
         const applyCover = () => {
           const v = mindar?.video as HTMLVideoElement | undefined;
           if (!v || !v.videoWidth || !v.videoHeight) return;
-          const cw = container.clientWidth;
-          const ch = container.clientHeight;
-          const scale = Math.max(cw / v.videoWidth, ch / v.videoHeight);
-          v.style.width = `${v.videoWidth * scale}px`;
-          v.style.height = `${v.videoHeight * scale}px`;
-          v.style.top = `${(ch - v.videoHeight * scale) / 2}px`;
-          v.style.left = `${(cw - v.videoWidth * scale) / 2}px`;
-          v.style.objectFit = "cover";
+          try {
+            mindar.resize?.();
+          } catch {
+            /* ignore */
+          }
         };
         const camVideo: HTMLVideoElement | undefined = mindar.video;
-        camVideo?.addEventListener("loadedmetadata", applyCover);
-        camVideo?.addEventListener("resize", applyCover);
+        const camEvents = ["loadedmetadata", "resize", "playing"] as const;
+        camEvents.forEach((ev) => camVideo?.addEventListener(ev, applyCover));
         window.addEventListener("resize", applyCover);
+        window.addEventListener("orientationchange", applyCover);
+        let coverPolls = 0;
+        const coverPoll = window.setInterval(() => {
+          applyCover();
+          if (++coverPolls > 15) window.clearInterval(coverPoll);
+        }, 400);
         cleanups.push(() => {
-          camVideo?.removeEventListener("loadedmetadata", applyCover);
-          camVideo?.removeEventListener("resize", applyCover);
+          window.clearInterval(coverPoll);
+          camEvents.forEach((ev) => camVideo?.removeEventListener(ev, applyCover));
           window.removeEventListener("resize", applyCover);
+          window.removeEventListener("orientationchange", applyCover);
         });
 
         // Anchors only — no media upfront. Each video streams from storage
@@ -205,8 +211,15 @@ export function ArExperience({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const texture = new (THREE as any).VideoTexture(video);
           playing.dispose.push(() => texture.dispose());
+          // The anchor's local unit is the PHOTO's height (MindAR divides
+          // the tracked pose by the marker height), so the photo occupies
+          // (markerW/markerH) x 1 in anchor space. Size the plane to the
+          // photo's exact rectangle — never the video's aspect — so the
+          // video stays inside the photo frame.
+          const dims = mindar.controller?.markerDimensions?.[page.markerIndex];
+          const photoW = dims && dims[1] ? dims[0] / dims[1] : 1;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const geometry = new (THREE as any).PlaneGeometry(1, 1);
+          const geometry = new (THREE as any).PlaneGeometry(photoW, 1);
           playing.dispose.push(() => geometry.dispose());
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const material = new (THREE as any).MeshBasicMaterial({ map: texture });
@@ -214,20 +227,38 @@ export function ArExperience({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const plane = new (THREE as any).Mesh(geometry, material);
           playing.plane = plane;
-          // MindAR normalizes each target to a 1x1 plane in anchor space;
-          // fit the video over it without distortion (object-fit: cover).
-          const fitPlane = () => {
-            const vw = video.videoWidth || 16;
-            const vh = video.videoHeight || 9;
-            const aspect = vw / vh;
-            if (aspect >= 1) plane.scale.set(aspect, 1, 1);
-            else plane.scale.set(1, 1 / aspect, 1);
+          // object-fit: cover for the texture — crop the video's UVs to its
+          // aspect so it fills the photo rect without distortion.
+          const fitUVs = () => {
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            if (!vw || !vh) return;
+            const va = vw / vh;
+            let u0 = 0;
+            let v0 = 0;
+            let u1 = 1;
+            let v1 = 1;
+            if (va > photoW) {
+              const c = (1 - photoW / va) / 2;
+              u0 = c;
+              u1 = 1 - c;
+            } else if (va < photoW) {
+              const c = (1 - va / photoW) / 2;
+              v0 = c;
+              v1 = 1 - c;
+            }
+            const uv = geometry.attributes.uv;
+            uv.setXY(0, u0, 1);
+            uv.setXY(1, u1, 1);
+            uv.setXY(2, u0, 0);
+            uv.setXY(3, u1, 0);
+            uv.needsUpdate = true;
           };
-          video.addEventListener("loadedmetadata", fitPlane);
+          video.addEventListener("loadedmetadata", fitUVs);
           video.addEventListener("ended", () => stopPlayback());
           video.addEventListener("error", () => stopPlayback());
           playing.dispose.push(() => {
-            video.removeEventListener("loadedmetadata", fitPlane);
+            video.removeEventListener("loadedmetadata", fitUVs);
           });
           playing.anchor.group.add(plane);
           video.src = page.videoUrl;
@@ -263,7 +294,7 @@ export function ArExperience({
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      stopPlayback(false);
+      stopPlayback();
       cleanups.forEach((c) => {
         try {
           c();

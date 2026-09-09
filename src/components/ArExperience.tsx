@@ -64,6 +64,24 @@ export function ArExperience({
     async function start() {
       try {
         setStatus("starting");
+        // MindAR wraps getUserMedia errors in opaque controller errors. Probe
+        // the camera first so denials/missing cameras surface with a real
+        // reason instead of "AR failed to start".
+        try {
+          const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+          probe.getTracks().forEach((t) => t.stop());
+        } catch (err) {
+          const name = (err as DOMException)?.name;
+          if (name === "NotAllowedError")
+            throw new Error(
+              "Camera access was denied. Allow camera permission for this site, then tap Start camera again.",
+            );
+          if (name === "NotFoundError")
+            throw new Error("No camera found. Open this album link on a phone.");
+          if (name === "NotReadableError")
+            throw new Error("The camera is busy in another app. Close it and retry.");
+          throw new Error("Camera could not be started on this device.");
+        }
         // WebAR runtime is vendored in public/vendor (mind-ar@1.2.5 +
         // three@0.149.0, MIT) and loaded at runtime so `npm install` stays
         // free of mind-ar's native `canvas` dependency (unbuildable on

@@ -38,7 +38,12 @@ function GuestArPage() {
   const { albumId } = Route.useParams();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [started, setStarted] = useState(false);
+  // Mock prototype only: which page the simulate button shows in the sheet.
   const [scanIndex, setScanIndex] = useState<number | null>(null);
+  // Real AR: which marker is currently tracked — caption only, never a
+  // browser player. The video itself plays inside the camera view, anchored
+  // to the printed photo.
+  const [arActiveIndex, setArActiveIndex] = useState<number | null>(null);
   const [arError, setArError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -111,7 +116,8 @@ function GuestArPage() {
     : (mockAlbum?.eventDate ?? "");
   const mockPages = mockAlbum?.pages ?? [];
   const currentMock = scanIndex !== null ? mockPages[scanIndex] : null;
-  const currentManifestPage = scanIndex !== null ? (manifest?.pages[scanIndex] ?? null) : null;
+  const activeArTitle =
+    manifest && arActiveIndex !== null ? (manifest.pages[arActiveIndex]?.title ?? null) : null;
 
   const unsupported =
     typeof navigator !== "undefined" && !navigator.mediaDevices?.getUserMedia && manifest !== null;
@@ -132,9 +138,9 @@ function GuestArPage() {
         <ArExperience
           manifest={manifest}
           started={started}
-          activeIndex={scanIndex}
-          onTargetFound={(i) => setScanIndex(i)}
-          onTargetLost={() => undefined}
+          activeIndex={arActiveIndex}
+          onTargetFound={(i) => setArActiveIndex(i)}
+          onTargetLost={() => setArActiveIndex(null)}
           onError={(m) => setArError(m)}
         />
       )}
@@ -183,6 +189,15 @@ function GuestArPage() {
         </div>
       )}
 
+      {/* Pure AR: detected page caption. No browser player, no popups. */}
+      {activeArTitle && (
+        <div className="absolute inset-x-0 bottom-28 z-10 flex justify-center px-8">
+          <p className="flex items-center gap-2 rounded-full bg-black/60 px-4 py-2 text-xs text-white">
+            <Play className="size-3.5 text-gold" /> {activeArTitle}
+          </p>
+        </div>
+      )}
+
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -221,18 +236,20 @@ function GuestArPage() {
         )}
       </motion.div>
 
-      <div className="absolute inset-x-0 bottom-10 z-10 flex justify-center gap-3 px-8">
-        {/* Prototype fallback stays for mock albums; doubles as an accessible list trigger. */}
-        <motion.button
-          whileTap={{ scale: 0.94 }}
-          whileHover={{ scale: 1.03 }}
-          onClick={simulateScan}
-          disabled={loading || (!(manifest?.pages.length ?? 0) && !mockPages.length)}
-          className="flex items-center gap-2 rounded-full bg-gold px-7 py-3.5 text-sm font-semibold text-[#3a1420] disabled:opacity-40"
-        >
-          <Sparkles className="size-4" /> {manifest ? "Browse memories" : "Simulate Scan"}
-        </motion.button>
-      </div>
+      {/* Prototype-only controls. Real albums are pure AR: no buttons. */}
+      {!manifest && (
+        <div className="absolute inset-x-0 bottom-10 z-10 flex justify-center gap-3 px-8">
+          <motion.button
+            whileTap={{ scale: 0.94 }}
+            whileHover={{ scale: 1.03 }}
+            onClick={simulateScan}
+            disabled={loading || !mockPages.length}
+            className="flex items-center gap-2 rounded-full bg-gold px-7 py-3.5 text-sm font-semibold text-[#3a1420] disabled:opacity-40"
+          >
+            <Sparkles className="size-4" /> Simulate Scan
+          </motion.button>
+        </div>
+      )}
 
       <BottomSheet open={helpOpen} onClose={() => setHelpOpen(false)}>
         <div className="text-foreground">
@@ -248,8 +265,8 @@ function GuestArPage() {
         </div>
       </BottomSheet>
 
-      <BottomSheet open={!!(currentMock ?? currentManifestPage)} onClose={() => setScanIndex(null)}>
-        {(currentMock ?? currentManifestPage) && (
+      <BottomSheet open={!!currentMock} onClose={() => setScanIndex(null)}>
+        {currentMock && (
           <div className="text-foreground">
             <p className="text-[11px] tracking-[0.3em] text-muted-foreground uppercase">
               Now Playing
@@ -257,9 +274,9 @@ function GuestArPage() {
             <h2 className="mt-1 text-2xl">{currentMock?.title ?? currentManifestPage?.title}</h2>
             <div className="relative mt-4 aspect-video overflow-hidden rounded-xl bg-black">
               <video
-                key={currentMock?.id ?? `m-${scanIndex}`}
-                src={currentMock?.videoUrl ?? currentManifestPage?.videoUrl}
-                poster={currentMock?.photoUrl}
+                key={currentMock.id}
+                src={currentMock.videoUrl}
+                poster={currentMock.photoUrl}
                 controls
                 autoPlay
                 playsInline

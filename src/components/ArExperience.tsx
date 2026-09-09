@@ -148,8 +148,12 @@ export function ArExperience({
           container,
           imageTargetSrc: manifest.marker.url,
           maxTrack: 1,
+          // One-euro filter: minimal cutoff, tiny beta -> heavily smoothed
+          // pose. On glossy/screen targets the matched features jitter
+          // frame to frame; strong smoothing keeps the overlay anchored
+          // (costs a little lag, fine for video playback).
           filterMinCF: 0.0001,
-          filterBeta: 0.001,
+          filterBeta: 0.0001,
           // Tolerate brief detection dropouts so a shaky hand doesn't
           // flip found/lost every few frames (which looks like jitter).
           // Warmup needs several consistent frames before "found" — glossy
